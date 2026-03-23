@@ -1,0 +1,48 @@
+name: Build Docker Image for ARMv7
+
+on:
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 设置 QEMU（支持跨架构构建）
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 3. 设置 Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. 构建 ARMv7 镜像并导出为本地文件
+      - name: Build ARMv7 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm/v7
+          load: true  # 加载到本地镜像列表
+          tags: drpy-node:armv7
+
+      # 5. 保存镜像为 tar 文件
+      - name: Save image as tar
+        run: |
+          docker save drpy-node:armv7 -o drpy-node-armv7.tar
+
+      # 6. 压缩文件（减小体积，可选）
+      - name: Compress tar file
+        run: |
+          gzip drpy-node-armv7.tar
+
+      # 7. 上传为 Artifact（可直接下载）
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drpy-node-armv7
+          path: drpy-node-armv7.tar.gz
+          retention-days: 7  # 保留7天
