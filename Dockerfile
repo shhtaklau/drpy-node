@@ -1,50 +1,41 @@
 # 构建器阶段
-# 使用node:20-alpine(17 < version < 23)作为基础镜像
 FROM node:20-alpine AS builder
 
-# 安装git
-RUN apk add --no-cache git
+# 安装 git 和构建工具
+RUN apk add --no-cache git python3 make g++
 
-# 如果您需要配置git以使用特定的HTTP版本，请确保这是出于必要和安全考虑
-RUN git config --global http.version HTTP/1.1
+# 设置国内镜像源（加速下载）
+RUN yarn config set registry https://registry.npmmirror.com && \
+    npm config set registry https://registry.npmmirror.com
 
-# 创建一个工作目录
+# 创建工作目录
 WORKDIR /app
 
-# 克隆GitHub仓库到工作目录
-RUN git clone https://github.com/hjdhnx/drpy-node.git .
+# 复制 package.json 文件（利用 Docker 缓存）
+COPY package.json yarn.lock* ./
 
-# 安装项目依赖项和puppeteer
-RUN yarn && yarn add puppeteer
+# 安装依赖（增加超时时间）
+RUN yarn install --network-timeout 100000 || \
+    npm install --network-timeout 100000
 
-# 复制工作目录中的所有文件到一个临时目录中
-# 以便在运行器阶段中使用
+# 安装 puppeteer（跳过 Chromium 下载，减小体积）
+RUN yarn add puppeteer --ignore-optional || \
+    npm install puppeteer --ignore-optional
+
+# 复制所有源代码
+COPY . .
+
+# 复制到临时目录
 RUN mkdir -p /tmp/drpys && \
     cp -r /app/. /tmp/drpys/
 
-
 # 运行器阶段
-# 使用alpine:latest作为基础镜像来创建一个更小的镜像
-# 但是无法用pm2
 FROM alpine:latest AS runner
 
-# 创建一个工作目录
-WORKDIR /app
-
-# 复制构建器阶段中准备好的文件和依赖项到运行器阶段的工作目录中
-COPY --from=builder /tmp/drpys/. /app
-RUN cp /app/.env.development /app/.env && \
-    rm -f /app/.env.development && \
-    sed -i 's|^VIRTUAL_ENV[[:space:]]*=[[:space:]]*$|VIRTUAL_ENV=/app/.venv|' /app/.env && \
-    echo '{"ali_token":"","ali_refresh_token":"","quark_cookie":"","uc_cookie":"","bili_cookie":"","thread":"10","enable_dr2":"1","enable_py":"2"}' > /app/config/env.json
-
-# 安装Node.js运行时（如果需要的话，这里已经假设在构建器阶段中安装了所有必要的Node.js依赖项）
-# 由于我们已经将node_modules目录复制到了运行器阶段，因此这里不需要再次安装npm或node_modules中的依赖项
-# 但是，我们仍然需要安装Node.js运行时本身（除非drpys项目是一个纯静态资源服务，不需要Node.js运行时）
-RUN apk add --no-cache nodejs
-
-# 安装php8.3及其扩展
+# 安装运行时环境
 RUN apk add --no-cache \
+    nodejs \
+    npm \
     php83 \
     php83-cli \
     php83-curl \
@@ -55,22 +46,47 @@ RUN apk add --no-cache \
     php83-pdo_sqlite \
     php83-openssl \
     php83-sqlite3 \
-    php83-json
-RUN ln -sf /usr/bin/php83 /usr/bin/php
-
-# 安装python3依赖
-RUN apk add --no-cache python3 \
+    php83-json \
+    php83-phar \
+    python3 \
     py3-pip \
     py3-setuptools \
-    py3-wheel
+    py3-wheel \
+    bash \
+    curl \
+    ca-certificates \
+    && ln -sf /usr/bin/php83 /usr/bin/php \
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
-# 激活python3虚拟环境并安装requirements依赖
+# 创建工作目录
+WORKDIR /app
+
+# 从构建器复制文件
+COPY --from=builder /tmp/drpys/. /app/
+
+# 配置文件处理
+RUN cp /app/.env.development /app/.env 2>/dev/null || true && \
+    rm -f /app/.env.development 2>/dev/null || true && \
+    mkdir -p /app/config && \
+    echo '{"ali_token":"","ali_refresh_token":"","quark_cookie":"","uc_cookie":"","bili_cookie":"","thread":"10","enable_dr2":"1","enable_py":"2"}' > /app/config/env.json
+
+# 设置 Python 虚拟环境
 RUN python3 -m venv /app/.venv && \
     . /app/.venv/bin/activate && \
-    pip3 install -r /app/spider/py/base/requirements.txt
+    if [ -f /app/spider/py/base/requirements.txt ]; then \
+        pip3 install -r /app/spider/py/base/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple; \
+    fi
 
-# 暴露应用程序端口（根据您的项目需求调整）
+# 创建数据目录
+RUN mkdir -p /app/data /app/logs && \
+    chmod -R 755 /app
+
+# 暴露端口
 EXPOSE 5757
 
-# 指定容器启动时执行的命令
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:5757/health || exit 1
+
+# 启动命令
 CMD ["node", "index.js"]
