@@ -1,10 +1,5 @@
 name: Build Docker Image for ARMv7
 
-# 触发条件：推送代码到 main 分支，或者手动触发
-on:
-  push:
-    branches:
-      - main
   workflow_dispatch:  # 允许手动触发
 
 jobs:
